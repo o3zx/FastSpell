@@ -1,0 +1,60 @@
+.vc-fastspell-mic {
+    color: currentcolor;
+}
+
+.vc-fastspell-spell-off {
+    opacity: 0.4;
+}
+
+.vc-fastspell-row {
+    display: flex;
+    gap: 8px;
+    align-items: center;
+    margin-bottom: 12px;
+}
+
+.vc-fastspell-row > div {
+    flex: 1;
+}
+
+.vc-fastspell-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-bottom: 8px;
+}
+
+.vc-fastspell-chip {
+    background: var(--background-modifier-accent);
+    color: var(--text-default, var(--text-normal));
+    border-radius: 12px;
+    padding: 3px 10px;
+    font-size: 13px;
+    cursor: pointer;
+    user-select: none;
+}
+
+.vc-fastspell-chip:hover {
+    background: var(--status-danger);
+    color: #fff;
+}
+
+.vc-fastspell-mic-recording {
+    color: var(--status-danger, #f23f43) !important;
+    animation: vc-fastspell-pulse 1.2s ease-in-out infinite;
+}
+
+.vc-fastspell-mic-busy {
+    animation: vc-fastspell-pulse 0.5s linear infinite;
+}
+
+@keyframes vc-fastspell-pulse {
+    0%,
+    100% {
+        opacity: 1;
+    }
+
+    50% {
+        opacity: 0.35;
+    }
+}
