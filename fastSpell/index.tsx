@@ -11,8 +11,6 @@ import * as DataStore from "@api/DataStore";
 import { Logger } from "@utils/Logger";
 import definePlugin, { PluginNative } from "@utils/types";
 
-import { ComponentDispatch } from "@webpack/common";
-
 import { AutocorrectChatBarButton, SpellIcon } from "./AutocorrectButton";
 import { settings } from "./settings";
 import { configureCustomCorrections, correct, getCustomCorrection, isKnown, isLoaded, parseDictionary } from "./spellcheck";
@@ -53,46 +51,49 @@ function isEligible(word: string, preceding: string) {
     return true;
 }
 
-/**
- * Replaces [start, end) of a text node inside the chat box with `replacement`.
- *
- * Never mutate the slate DOM directly (execCommand, Selection.modify, ...):
- * it desyncs slate's internal state and the chat box stops responding to
- * backspace and typing entirely. The only safe write path is Discord's own
- * INSERT_TEXT editor event, which replaces the current selection. So: select
- * the word via a DOM Range (slate follows DOM selection), wait for slate to
- * pick it up (it syncs on selectionchange + a tick), then dispatch INSERT_TEXT.
+/*
+ * Corrections are applied through the slate editor instance itself
+ * (deleteBackward + insertText), which is fully synchronous — no timing races,
+ * no duplicated words when typing fast. Never mutate the slate DOM directly
+ * (execCommand, Selection.modify): it desyncs slate and the chat box stops
+ * responding to backspace/typing. Dispatching INSERT_TEXT after setting a DOM
+ * selection is racy too: slate picks the selection up asynchronously, so under
+ * fast typing the insert lands at the old caret and duplicates the word.
  */
-function replaceWordViaEditor(node: Node, start: number, end: number, replacement: string) {
-    const selection = window.getSelection();
-    if (!selection) return;
 
-    const range = document.createRange();
-    range.setStart(node, start);
-    range.setEnd(node, end);
+function isSlateEditor(x: any): boolean {
+    return !!x
+        && typeof x.insertText === "function"
+        && typeof x.deleteBackward === "function"
+        && typeof x.apply === "function"
+        && Array.isArray(x.children);
+}
 
-    let done = false;
-    const fire = () => {
-        if (done) return;
-        done = true;
-        document.removeEventListener("selectionchange", fire);
-        setTimeout(() => {
-            // if the selection moved (user kept typing), abort rather than
-            // inserting somewhere unexpected
-            const s = window.getSelection();
-            if (
-                !s || s.anchorNode !== node || s.focusNode !== node ||
-                Math.min(s.anchorOffset, s.focusOffset) !== start ||
-                Math.max(s.anchorOffset, s.focusOffset) !== end
-            ) return;
-            ComponentDispatch.dispatchToLastSubscribed("INSERT_TEXT", { rawText: replacement, plainText: replacement });
-        }, 0);
-    };
+const slateCache = new WeakMap<HTMLElement, any>();
 
-    document.addEventListener("selectionchange", fire);
-    selection.removeAllRanges();
-    selection.addRange(range);
-    setTimeout(fire, 60); // fallback in case selectionchange never fires
+/** Digs the slate editor instance out of the chat box's React fiber tree. */
+function findSlateEditor(el: HTMLElement): any {
+    const cached = slateCache.get(el);
+    if (cached) return cached;
+
+    const fiberKey = Object.keys(el).find(k => k.startsWith("__reactFiber$"));
+    if (!fiberKey) return null;
+
+    let fiber: any = (el as any)[fiberKey];
+    for (let i = 0; fiber && i < 40; i++) {
+        for (const props of [fiber.memoizedProps, fiber.pendingProps]) {
+            if (!props) continue;
+            if (isSlateEditor(props.editor)) return slateCache.set(el, props.editor), props.editor;
+            const v = props.value;
+            if (isSlateEditor(v)) return slateCache.set(el, v), v;
+            if (Array.isArray(v)) {
+                const hit = v.find(isSlateEditor);
+                if (hit) return slateCache.set(el, hit), hit;
+            }
+        }
+        fiber = fiber.return;
+    }
+    return null;
 }
 
 function onKeyDown(e: KeyboardEvent) {
@@ -131,6 +132,11 @@ function onKeyDown(e: KeyboardEvent) {
 
     lastCorrection = null;
 
+    // caret must be at the end of the word, not inside one (e.g. after
+    // deleting back into the middle of a word)
+    const charAfterCaret = node.textContent!.slice(selection.focusOffset, selection.focusOffset + 1);
+    if (/[A-Za-z]/.test(charAfterCaret)) return;
+
     const match = /([A-Za-z]+)$/.exec(beforeCaret);
     if (!match) return;
     const word = match[1];
@@ -138,16 +144,21 @@ function onKeyDown(e: KeyboardEvent) {
 
     if (!isEligible(word, preceding)) return;
 
-    // only the main chat box (the message edit box doesn't take INSERT_TEXT events)
-    if (!editor.closest("form")) return;
+    const slateEditor = findSlateEditor(editor as HTMLElement);
+    if (!slateEditor) return;
 
     const fixed = correct(word);
     if (!fixed) return;
 
     e.preventDefault();
     e.stopPropagation();
-    replaceWordViaEditor(node, selection.focusOffset - word.length, selection.focusOffset, fixed + e.key);
-    lastCorrection = { original: word, fixed, suffix: e.key };
+    try {
+        for (let i = 0; i < word.length; i++) slateEditor.deleteBackward("character");
+        slateEditor.insertText(fixed + e.key);
+        lastCorrection = { original: word, fixed, suffix: e.key };
+    } catch (err) {
+        logger.error("Failed to apply correction", err);
+    }
 }
 
 /** Corrects the final word of a message (as-you-type mode can't catch it: Enter sends immediately). */
