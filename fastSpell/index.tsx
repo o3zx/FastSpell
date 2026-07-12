@@ -1,4 +1,4 @@
-/*
+﻿/*
  * Vencord, a Discord client mod
  * Copyright (c) 2026 Vendicated and contributors
  * SPDX-License-Identifier: GPL-3.0-or-later
@@ -10,6 +10,8 @@ import { addChatBarButton, removeChatBarButton } from "@api/ChatButtons";
 import * as DataStore from "@api/DataStore";
 import { Logger } from "@utils/Logger";
 import definePlugin, { PluginNative } from "@utils/types";
+
+import { ComponentDispatch } from "@webpack/common";
 
 import { AutocorrectChatBarButton, SpellIcon } from "./AutocorrectButton";
 import { settings } from "./settings";
@@ -51,10 +53,46 @@ function isEligible(word: string, preceding: string) {
     return true;
 }
 
-function replaceBeforeCaret(selection: Selection, charCount: number, replacement: string) {
-    for (let i = 0; i < charCount; i++)
-        (selection as any).modify("extend", "backward", "character");
-    document.execCommand("insertText", false, replacement);
+/**
+ * Replaces [start, end) of a text node inside the chat box with `replacement`.
+ *
+ * Never mutate the slate DOM directly (execCommand, Selection.modify, ...):
+ * it desyncs slate's internal state and the chat box stops responding to
+ * backspace and typing entirely. The only safe write path is Discord's own
+ * INSERT_TEXT editor event, which replaces the current selection. So: select
+ * the word via a DOM Range (slate follows DOM selection), wait for slate to
+ * pick it up (it syncs on selectionchange + a tick), then dispatch INSERT_TEXT.
+ */
+function replaceWordViaEditor(node: Node, start: number, end: number, replacement: string) {
+    const selection = window.getSelection();
+    if (!selection) return;
+
+    const range = document.createRange();
+    range.setStart(node, start);
+    range.setEnd(node, end);
+
+    let done = false;
+    const fire = () => {
+        if (done) return;
+        done = true;
+        document.removeEventListener("selectionchange", fire);
+        setTimeout(() => {
+            // if the selection moved (user kept typing), abort rather than
+            // inserting somewhere unexpected
+            const s = window.getSelection();
+            if (
+                !s || s.anchorNode !== node || s.focusNode !== node ||
+                Math.min(s.anchorOffset, s.focusOffset) !== start ||
+                Math.max(s.anchorOffset, s.focusOffset) !== end
+            ) return;
+            ComponentDispatch.dispatchToLastSubscribed("INSERT_TEXT", { rawText: replacement, plainText: replacement });
+        }, 0);
+    };
+
+    document.addEventListener("selectionchange", fire);
+    selection.removeAllRanges();
+    selection.addRange(range);
+    setTimeout(fire, 60); // fallback in case selectionchange never fires
 }
 
 function onKeyDown(e: KeyboardEvent) {
@@ -100,12 +138,15 @@ function onKeyDown(e: KeyboardEvent) {
 
     if (!isEligible(word, preceding)) return;
 
+    // only the main chat box (the message edit box doesn't take INSERT_TEXT events)
+    if (!editor.closest("form")) return;
+
     const fixed = correct(word);
     if (!fixed) return;
 
     e.preventDefault();
     e.stopPropagation();
-    replaceBeforeCaret(selection, word.length, fixed + e.key);
+    replaceWordViaEditor(node, selection.focusOffset - word.length, selection.focusOffset, fixed + e.key);
     lastCorrection = { original: word, fixed, suffix: e.key };
 }
 
@@ -138,9 +179,14 @@ function correctWholeMessage(text: string) {
         .join("");
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number): Promise<T | undefined> {
+    return Promise.race([promise, new Promise<undefined>(r => setTimeout(() => r(undefined), ms))]);
+}
+
 async function loadDictionary() {
     try {
-        let text = await DataStore.get<string>(DICT_KEY).catch(() => undefined);
+        // the cache read can hang when Discord is still booting, hence the timeout
+        let text = await withTimeout(DataStore.get<string>(DICT_KEY).catch(() => undefined), 5000);
 
         if (!text) {
             if (IS_WEB) {
@@ -158,11 +204,21 @@ async function loadDictionary() {
         if (text) {
             const count = parseDictionary(text);
             logger.info(`Dictionary loaded: ${count} words`);
-        } else {
-            logger.error("No dictionary available; autocorrect is disabled until next restart");
         }
     } catch (e) {
         logger.error("Failed to load dictionary", e);
+    }
+}
+
+let retryTimer: ReturnType<typeof setTimeout> | undefined;
+let retriesLeft = 10;
+
+/** Keeps retrying until the dictionary is up — a load attempt during Discord's boot can fail transiently. */
+async function loadDictionaryWithRetry() {
+    await loadDictionary();
+    if (!isLoaded() && retriesLeft-- > 0) {
+        logger.warn(`Dictionary not loaded yet, retrying in 10s (${retriesLeft} attempts left)`);
+        retryTimer = setTimeout(loadDictionaryWithRetry, 10_000);
     }
 }
 
@@ -180,12 +236,14 @@ export default definePlugin({
 
     start() {
         configureCustomCorrections(() => settings.store.customCorrections ?? {});
-        loadDictionary();
+        retriesLeft = 10;
+        loadDictionaryWithRetry();
         document.addEventListener("keydown", onKeyDown, true);
         addChatBarButton("FastSpellAutocorrect", AutocorrectChatBarButton, SpellIcon);
     },
 
     stop() {
+        clearTimeout(retryTimer);
         document.removeEventListener("keydown", onKeyDown, true);
         removeChatBarButton("FastSpellAutocorrect");
     },
