@@ -21,14 +21,14 @@ export const MicIcon: IconComponent = ({ height = 20, width = 20, className }) =
 );
 
 function getProviderConfig() {
-    const { sttProvider, sttApiKey, sttModel, sttCustomUrl } = settings.store;
+    const { sttProvider, sttApiKey, sttModel, sttCustomUrl, sttTranslateModel } = settings.store;
     switch (sttProvider) {
         case "openai":
-            return { baseUrl: "https://api.openai.com/v1", model: sttModel || "whisper-1", apiKey: sttApiKey };
+            return { baseUrl: "https://api.openai.com/v1", model: sttModel || "whisper-1", apiKey: sttApiKey, translateModel: sttTranslateModel || "gpt-4o-mini" };
         case "custom":
-            return { baseUrl: sttCustomUrl, model: sttModel, apiKey: sttApiKey };
+            return { baseUrl: sttCustomUrl, model: sttModel, apiKey: sttApiKey, translateModel: sttTranslateModel };
         default:
-            return { baseUrl: "https://api.groq.com/openai/v1", model: sttModel || "whisper-large-v3-turbo", apiKey: sttApiKey };
+            return { baseUrl: "https://api.groq.com/openai/v1", model: sttModel || "whisper-large-v3-turbo", apiKey: sttApiKey, translateModel: sttTranslateModel || "llama-3.3-70b-versatile" };
     }
 }
 
@@ -92,7 +92,7 @@ export const SpeechChatBarButton: ChatBarButtonFactory = ({ isMainChat }) => {
 
             setBusy(true);
             try {
-                const { apiKey, baseUrl, model } = getProviderConfig();
+                const { apiKey, baseUrl, model, translateModel } = getProviderConfig();
                 const res = await Native.transcribeRecording({
                     filePath,
                     apiKey,
@@ -110,7 +110,19 @@ export const SpeechChatBarButton: ChatBarButtonFactory = ({ isMainChat }) => {
                     return;
                 }
 
-                insertTextIntoChatInputBox(res.text + " ");
+                let text = res.text;
+                const targetLanguage = settings.store.sttTranslateTo.trim();
+                if (targetLanguage) {
+                    if (!translateModel) {
+                        showToast("FastSpell: set a translation model in the plugin settings to use speech translation with a custom provider", Toasts.Type.FAILURE);
+                    } else {
+                        const translated = await Native.translateText({ apiKey, baseUrl, model: translateModel, text, targetLanguage });
+                        if (translated.ok && translated.text) text = translated.text;
+                        else showToast("FastSpell: translation failed, inserting what you said instead — " + (translated.error ?? "unknown error"), Toasts.Type.FAILURE);
+                    }
+                }
+
+                insertTextIntoChatInputBox(text + " ");
             } finally {
                 setBusy(false);
             }
@@ -118,7 +130,7 @@ export const SpeechChatBarButton: ChatBarButtonFactory = ({ isMainChat }) => {
     }
 
     const tooltip = busy
-        ? "Transcribing..."
+        ? settings.store.sttTranslateTo.trim() ? "Transcribing & translating..." : "Transcribing..."
         : recording
             ? "Stop recording & insert text"
             : "Voice typing (speech-to-text)";

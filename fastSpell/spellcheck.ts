@@ -8,6 +8,8 @@
 // correct() only runs for words that are NOT in the dictionary, so the hot path
 // (typing correctly spelled words) is a single Map lookup.
 
+import { getCustomCorrections } from "./customCorrections";
+
 const LETTERS = "abcdefghijklmnopqrstuvwxyz";
 
 // Internet/Discord slang the 2008-corpus dictionary doesn't know. Never "corrected".
@@ -39,13 +41,6 @@ let words = new Map<string, number>(); // word -> corpus frequency
 let loaded = false;
 
 const cache = new Map<string, string | null>();
-
-// user-defined "always replace X with Y" pairs, provided by the plugin
-let getCustomCorrections: () => Record<string, string> = () => ({});
-
-export function configureCustomCorrections(getter: () => Record<string, string>) {
-    getCustomCorrections = getter;
-}
 
 export function getCustomCorrection(word: string): string | null {
     const custom = getCustomCorrections()[word.toLowerCase()];

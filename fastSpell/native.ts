@@ -85,3 +85,54 @@ export async function transcribeRecording(_: IpcMainInvokeEvent, opts: Transcrib
         return { ok: false, error: "Request failed: " + String(e) };
     }
 }
+
+export interface TranslateOptions {
+    apiKey: string;
+    baseUrl: string;
+    model: string;
+    text: string;
+    targetLanguage: string;
+}
+
+export async function translateText(_: IpcMainInvokeEvent, opts: TranslateOptions): Promise<{ ok: boolean; text?: string; error?: string; }> {
+    let base: URL;
+    try {
+        base = new URL(opts.baseUrl);
+    } catch {
+        return { ok: false, error: "Invalid API base url" };
+    }
+    if (base.protocol !== "https:") return { ok: false, error: "API base url must be https" };
+
+    try {
+        const res = await fetch(base.toString().replace(/\/$/, "") + "/chat/completions", {
+            method: "POST",
+            headers: {
+                Authorization: `Bearer ${opts.apiKey}`,
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                model: opts.model,
+                temperature: 0,
+                messages: [
+                    {
+                        role: "system",
+                        content: `You are a translator. Translate the user's message into ${opts.targetLanguage}. Reply with ONLY the translation — no explanations, no notes, no quotation marks around it.`
+                    },
+                    { role: "user", content: opts.text }
+                ]
+            })
+        });
+
+        if (!res.ok) {
+            const body = await res.text().catch(() => "");
+            return { ok: false, error: `Translation API error ${res.status}: ${body.slice(0, 300)}` };
+        }
+
+        const data = await res.json() as { choices?: { message?: { content?: string; }; }[]; };
+        const text = data.choices?.[0]?.message?.content;
+        if (typeof text !== "string" || !text.trim()) return { ok: false, error: "API returned no translation" };
+        return { ok: true, text: text.trim() };
+    } catch (e) {
+        return { ok: false, error: "Request failed: " + String(e) };
+    }
+}

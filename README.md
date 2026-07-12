@@ -8,15 +8,16 @@ Discord's spellchecker just underlines words in red and honestly it's slow half 
 
 **Autocorrect**
 - Fixes typos instantly when you hit space or punctuation: `teh` → `the`, `becuase` → `because`, `definately` → `definitely`
+- Auto-capitalization like a phone keyboard: sentence starts get a capital letter, `i` becomes `I` (can be turned off)
 - Keeps your capitalization (`Wrold` → `World`)
 - Knows internet slang — it won't "fix" lol, bruh, ngl, rizz and friends
 - Leaves mentions, emojis, links, code blocks and ALL-CAPS words alone
-- Typed something on purpose and it got corrected? Press backspace and fix it, it won't touch that word again
 - Runs fully offline after the first start (it downloads an 82k word dictionary once and caches it)
 
 **Voice typing**
 - Click the mic button, talk, click again — your words show up in the chat box
 - Uses Whisper through Groq's API (free key, takes a minute to make) so it's fast and accurate, and it auto-detects the language you speak
+- Optional translation: pick an output language in the panel and whatever you say gets typed out in that language — speak Arabic, send English
 
 **The panel**
 - Click the spellcheck button (Aa✓) in the chat bar to open the panel
