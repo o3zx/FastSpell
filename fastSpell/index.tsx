@@ -12,8 +12,9 @@ import { Logger } from "@utils/Logger";
 import definePlugin, { PluginNative } from "@utils/types";
 
 import { AutocorrectChatBarButton, SpellIcon } from "./AutocorrectButton";
+import { addCustomCorrection, getCustomCorrections, loadCustomCorrections, removeCustomCorrection } from "./customCorrections";
 import { settings } from "./settings";
-import { configureCustomCorrections, correct, getCustomCorrection, isKnown, isLoaded, parseDictionary } from "./spellcheck";
+import { correct, getCustomCorrection, isKnown, isLoaded, parseDictionary } from "./spellcheck";
 import { MicIcon, SpeechChatBarButton } from "./SpeechButton";
 
 const logger = new Logger("FastSpell");
@@ -21,11 +22,6 @@ const DICT_KEY = "FastSpell_dictionary";
 
 // keys that mark the end of a word while typing
 const TRIGGER_KEYS = new Set([" ", ".", ",", "!", "?", ";", ":"]);
-
-// words the user "un-corrected" with backspace this session; never touch them again
-const sessionIgnore = new Set<string>();
-
-let lastCorrection: { original: string; fixed: string; suffix: string; } | null = null;
 
 let userDictRaw = "";
 let userDict = new Set<string>();
@@ -46,8 +42,7 @@ function isEligible(word: string, preceding: string) {
     if (settings.store.ignoreCapitalized && /^[A-Z]/.test(word)) return false;
     // part of a mention, channel, emoji name, command, url, hyphenated word, contraction...
     if (/[@#:/\\'’\-&_.\d]$/.test(preceding)) return false;
-    const lower = word.toLowerCase();
-    if (sessionIgnore.has(lower) || getUserDict().has(lower)) return false;
+    if (getUserDict().has(word.toLowerCase())) return false;
     return true;
 }
 
@@ -96,15 +91,42 @@ function findSlateEditor(el: HTMLElement): any {
     return null;
 }
 
-function onKeyDown(e: KeyboardEvent) {
-    if (!settings.store.autocorrect || !isLoaded()) return;
-
-    const isTrigger = TRIGGER_KEYS.has(e.key);
-    const isBackspace = e.key === "Backspace";
-    if (!isTrigger && !isBackspace) {
-        if (e.key.length === 1) lastCorrection = null;
-        return;
+/** True if nothing (text, mentions, emojis...) comes before this text node on its chat line. */
+function isLineStart(node: Node): boolean {
+    let n: Node | null = node;
+    while (n) {
+        if (n instanceof HTMLElement && n.getAttribute("data-slate-node") === "element") return true;
+        if (n.previousSibling) return false;
+        n = n.parentNode;
     }
+    return true;
+}
+
+// Sentence-ending punctuation, optionally followed by closing quotes/brackets.
+// The lookbehind keeps "..." (and …) from capitalizing the next word — trailing
+// dots in chat are a pause, not a sentence end.
+const SENTENCE_END = /(?<![.…])[.!?]["')\]]*$/;
+
+function isSentenceStart(preceding: string, node: Node): boolean {
+    const t = preceding.trimEnd();
+    if (t === "") return isLineStart(node);
+    return SENTENCE_END.test(t);
+}
+
+/** Applies phone-style capitalization to a word that is about to be committed. */
+function autoCapitalize(word: string, preceding: string, node: Node): string {
+    if (!/^[a-z]/.test(word)) return word;
+    if (word === "i") return "I";
+    if (isSentenceStart(preceding, node)) return word[0].toUpperCase() + word.slice(1);
+    return word;
+}
+
+function onKeyDown(e: KeyboardEvent) {
+    const correcting = settings.store.autocorrect && isLoaded();
+    const capitalizing = settings.store.autoCapitalize;
+    if (!correcting && !capitalizing) return;
+
+    if (!TRIGGER_KEYS.has(e.key)) return;
     if (e.ctrlKey || e.metaKey || e.altKey) return;
 
     const editor = (e.target as HTMLElement)?.closest?.('[data-slate-editor="true"]');
@@ -117,21 +139,6 @@ function onKeyDown(e: KeyboardEvent) {
 
     const beforeCaret = node.textContent!.slice(0, selection.focusOffset);
 
-    if (isBackspace) {
-        // Deleting right after a correction means the user didn't want it.
-        // Let the delete happen normally, but stop correcting that word for
-        // the rest of the session so they can type it their way.
-        if (lastCorrection) {
-            const { original, fixed, suffix } = lastCorrection;
-            lastCorrection = null;
-            if (beforeCaret.endsWith(fixed + suffix) || beforeCaret.endsWith(fixed))
-                sessionIgnore.add(original.toLowerCase());
-        }
-        return;
-    }
-
-    lastCorrection = null;
-
     // caret must be at the end of the word, not inside one (e.g. after
     // deleting back into the middle of a word)
     const charAfterCaret = node.textContent!.slice(selection.focusOffset, selection.focusOffset + 1);
@@ -142,20 +149,21 @@ function onKeyDown(e: KeyboardEvent) {
     const word = match[1];
     const preceding = beforeCaret.slice(0, -word.length);
 
-    if (!isEligible(word, preceding)) return;
+    let result = word;
+    if (correcting && isEligible(word, preceding))
+        result = correct(word) ?? word;
+    if (capitalizing)
+        result = autoCapitalize(result, preceding, node);
+    if (result === word) return;
 
     const slateEditor = findSlateEditor(editor as HTMLElement);
     if (!slateEditor) return;
-
-    const fixed = correct(word);
-    if (!fixed) return;
 
     e.preventDefault();
     e.stopPropagation();
     try {
         for (let i = 0; i < word.length; i++) slateEditor.deleteBackward("character");
-        slateEditor.insertText(fixed + e.key);
-        lastCorrection = { original: word, fixed, suffix: e.key };
+        slateEditor.insertText(result + e.key);
     } catch (err) {
         logger.error("Failed to apply correction", err);
     }
@@ -186,6 +194,19 @@ function correctWholeMessage(text: string) {
                 const fixed = correct(word);
                 return fixed ? pre + fixed + tail : full;
             });
+        })
+        .join("");
+}
+
+/** Capitalizes sentence starts and lone "i" across the message, skipping code segments. */
+function capitalizeSentences(text: string) {
+    return text
+        .split(/(```[\s\S]*?```|`[^`\n]*`)/)
+        .map((part, i) => {
+            if (i % 2 === 1) return part; // code segment
+            return part
+                .replace(/(^\s*|\n\s*|(?<![.…])[.!?]["')\]]*\s+)([a-z])/g, (_, pre, c) => pre + c.toUpperCase())
+                .replace(/(^|[\s("'[])i(?=[\s,.!?;:')\]]|'|$)/g, (_, pre) => pre + "I");
         })
         .join("");
 }
@@ -233,9 +254,30 @@ async function loadDictionaryWithRetry() {
     }
 }
 
+let ccRetryTimer: ReturnType<typeof setTimeout> | undefined;
+let ccRetriesLeft = 5;
+
+/** Loads custom corrections from DataStore, migrating any pairs still stored in settings. */
+async function loadCorrectionsWithRetry() {
+    // older versions kept the pairs in settings.json, which every Discord branch
+    // shares and rewrites wholesale — migrate them out so they stop getting lost
+    const legacy = { ...(settings.store.customCorrections ?? {}) };
+    try {
+        await loadCustomCorrections(legacy);
+        if (Object.keys(legacy).length > 0) delete settings.store.customCorrections;
+    } catch (e) {
+        if (ccRetriesLeft-- > 0) {
+            logger.warn("Custom corrections not loaded yet, retrying in 10s");
+            ccRetryTimer = setTimeout(loadCorrectionsWithRetry, 10_000);
+        } else {
+            logger.error("Failed to load custom corrections", e);
+        }
+    }
+}
+
 export default definePlugin({
     name: "FastSpell",
-    description: "Fast autocorrect while you type + voice typing (speech-to-text) button for the chat box",
+    description: "Fast autocorrect + auto-capitalization while you type, and a voice typing button that can also translate your speech",
     authors: [{ name: "suhail", id: 0n }],
 
     settings,
@@ -246,29 +288,38 @@ export default definePlugin({
     },
 
     start() {
-        configureCustomCorrections(() => settings.store.customCorrections ?? {});
         retriesLeft = 10;
+        ccRetriesLeft = 5;
         loadDictionaryWithRetry();
+        loadCorrectionsWithRetry();
         document.addEventListener("keydown", onKeyDown, true);
         addChatBarButton("FastSpellAutocorrect", AutocorrectChatBarButton, SpellIcon);
     },
 
     stop() {
         clearTimeout(retryTimer);
+        clearTimeout(ccRetryTimer);
         document.removeEventListener("keydown", onKeyDown, true);
         removeChatBarButton("FastSpellAutocorrect");
     },
 
     onBeforeMessageSend(_channelId, message) {
-        if (!isLoaded() || !message.content) return;
+        if (!message.content) return;
 
-        if (settings.store.correctOnSend)
-            message.content = correctWholeMessage(message.content);
-        else if (settings.store.autocorrect)
-            message.content = correctTrailingWord(message.content);
+        if (isLoaded()) {
+            if (settings.store.correctOnSend)
+                message.content = correctWholeMessage(message.content);
+            else if (settings.store.autocorrect)
+                message.content = correctTrailingWord(message.content);
+        }
+        if (settings.store.autoCapitalize)
+            message.content = capitalizeSentences(message.content);
     },
 
     // handy for debugging from the console
     correct,
-    isKnown
+    isKnown,
+    getCustomCorrections,
+    addCustomCorrection,
+    removeCustomCorrection
 });

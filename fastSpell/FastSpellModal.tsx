@@ -10,10 +10,11 @@ import { Margins } from "@utils/margins";
 import { RenderModalProps } from "@vencord/discord-types";
 import { Button, Forms, Modal, openModal, TextInput, useState } from "@webpack/common";
 
+import { addCustomCorrection, removeCustomCorrection, useCustomCorrections } from "./customCorrections";
 import { addToUserDictionary, removeFromUserDictionary, settings } from "./settings";
 
 function Toggles() {
-    const { autocorrect, correctOnSend, ignoreCapitalized } = settings.use(["autocorrect", "correctOnSend", "ignoreCapitalized"]);
+    const { autocorrect, correctOnSend, autoCapitalize, ignoreCapitalized } = settings.use(["autocorrect", "correctOnSend", "autoCapitalize", "ignoreCapitalized"]);
 
     return (
         <>
@@ -29,6 +30,13 @@ function Toggles() {
                 description="Go over the full message one more time right before it is sent"
                 value={correctOnSend}
                 onChange={v => settings.store.correctOnSend = v}
+                hideBorder
+            />
+            <FormSwitch
+                title="Auto-capitalization"
+                description={'Capitalize the first word of every sentence and the word "i", like a phone keyboard'}
+                value={autoCapitalize}
+                onChange={v => settings.store.autoCapitalize = v}
                 hideBorder
             />
             <FormSwitch
@@ -85,8 +93,7 @@ function IgnoredWords() {
 }
 
 function CustomCorrections() {
-    settings.use(["customCorrections"]);
-    const corrections = settings.store.customCorrections ?? {};
+    const corrections = useCustomCorrections();
     const [wrong, setWrong] = useState("");
     const [right, setRight] = useState("");
 
@@ -94,15 +101,9 @@ function CustomCorrections() {
         const from = wrong.trim().toLowerCase().replace(/[^a-z']/g, "");
         const to = right.trim();
         if (!from || !to) return;
-        settings.store.customCorrections = { ...corrections, [from]: to };
+        addCustomCorrection(from, to);
         setWrong("");
         setRight("");
-    };
-
-    const remove = (key: string) => {
-        const next = { ...corrections };
-        delete next[key];
-        settings.store.customCorrections = next;
     };
 
     const entries = Object.entries(corrections);
@@ -123,11 +124,29 @@ function CustomCorrections() {
             <div className="vc-fastspell-chips">
                 {entries.length === 0 && <Forms.FormText>Nothing here yet.</Forms.FormText>}
                 {entries.map(([from, to]) => (
-                    <span key={from} className="vc-fastspell-chip" title="Click to remove" onClick={() => remove(from)}>
+                    <span key={from} className="vc-fastspell-chip" title="Click to remove" onClick={() => removeCustomCorrection(from)}>
                         {from} → {to} ✕
                     </span>
                 ))}
             </div>
+        </section>
+    );
+}
+
+function VoiceTranslation() {
+    const { sttTranslateTo } = settings.use(["sttTranslateTo"]);
+
+    return (
+        <section className={Margins.top16}>
+            <Forms.FormTitle tag="h3">Voice typing translation</Forms.FormTitle>
+            <Forms.FormText className={Margins.bottom8}>
+                Speak in any language and the mic button will type it out in this one. Leave empty to keep the language you spoke.
+            </Forms.FormText>
+            <TextInput
+                placeholder="Translate my speech into... (e.g. English)"
+                value={sttTranslateTo}
+                onChange={v => settings.store.sttTranslateTo = v}
+            />
         </section>
     );
 }
@@ -139,6 +158,7 @@ function FastSpellModal({ rootProps }: { rootProps: RenderModalProps; }) {
             <Divider className={Margins.bottom16} />
             <IgnoredWords />
             <CustomCorrections />
+            <VoiceTranslation />
         </Modal>
     );
 }

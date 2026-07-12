@@ -29,6 +29,11 @@ export const settings = definePluginSettings({
         description: "Also autocorrect the whole message right before it is sent",
         default: false
     },
+    autoCapitalize: {
+        type: OptionType.BOOLEAN,
+        description: "Capitalize the first word of every sentence and the word \"i\" (phone keyboard style)",
+        default: true
+    },
     minWordLength: {
         type: OptionType.NUMBER,
         description: "Don't autocorrect words shorter than this many letters",
@@ -71,6 +76,16 @@ export const settings = definePluginSettings({
     sttLanguage: {
         type: OptionType.STRING,
         description: "Spoken language as a 2-letter code (e.g. en, ar). Leave empty to auto-detect.",
+        default: ""
+    },
+    sttTranslateTo: {
+        type: OptionType.STRING,
+        description: "Translate your speech into this language before inserting it (e.g. English, Arabic). Leave empty to keep the language you spoke.",
+        default: ""
+    },
+    sttTranslateModel: {
+        type: OptionType.STRING,
+        description: "Model used for the speech translation (leave empty for the provider default)",
         default: ""
     }
 }, {
