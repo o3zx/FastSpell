@@ -24,6 +24,8 @@ Discord's spellchecker just underlines words in red and honestly it's slow half 
 - Toggle autocorrect on/off (or right-click the button for a quick toggle)
 - Add words it should never touch
 - Add your own corrections, like `im` → `I'm` or `alot` → `a lot`
+- Pick the language voice typing should translate into (leave it empty to keep the language you spoke)
+- Your word list and corrections are saved in Discord's own storage, not the plugin settings file, so they survive plugin updates and reinstalls
 
 ## Install (Windows)
 
